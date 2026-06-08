@@ -1,18 +1,5 @@
-CREATE TABLE TSTAUTO.TOR_MOBILEAPPLOGINAPIDETAIL_HIST (
-  RUNID         VARCHAR2(100)                          NOT NULL,
-  SCENARIONAME  VARCHAR2(200)                          NOT NULL,
-  SERVICENAME   VARCHAR2(200)                          NOT NULL,
-  REQUESTBODY   CLOB,
-  HEADERSBODY   CLOB,
-  COLLECTDATE   TIMESTAMP(6),
-  CREATEDATE    TIMESTAMP(6)  DEFAULT CURRENT_TIMESTAMP,
-  WIDGETTYPE    NUMBER        DEFAULT -1               NOT NULL
-) TABLESPACE FINIX_TBS;
+@echo off
 
+cd /d C:\Test_Automation_App\test-automation-mobile-runner\test-automation-mobile-runner
 
-
-
-SELECT column_name, data_type, data_length, nullable, data_default
-FROM   user_tab_columns
-WHERE  table_name = 'TOR_MOBILEAPPLOGINAPIDETAIL_HIST'
-ORDER  BY column_id;
+venv\Scripts\python.exe -m src.entrypoints.precondition_runner --config config/mobile_login_logger.json
