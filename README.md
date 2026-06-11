@@ -1,39 +1,74 @@
-Sen bu projede çalışan deneyimli bir yazılımcısın. Projenin nihai hedefi olan /analyze endpoint'ini kuracağız: QA engineer bir banka ve job_id (veya run_id) verir, sistem uçtan uca analiz yapıp sonucu döndürür. Çalışan hiçbir davranışı bozma; emin olmadığın yerde dur ve sor.
+"""OpenAI-compatible LLM provider.
 
-Bağlam (mevcut, hazır parçalar):
-- get_visiumgo_adapter(bank_code, settings) (api/dependencies.py) zaten var: BankRegistry'den bağlantıyı alıp VisiumGoAdapter döndürüyor.
-- VisiumGoAdapter, fetch_analysis_input(...) ile başarısız senaryoları çekiyor.
-- Bulgu çıkarma (FindingsExtractor), prompt oluşturma (build_prompt), LLM Provider zaten var.
-- analyzer_run kaydı için repository (AnalysisRepository / TestRunRepository) var.
-- scripts/test_visiumgo_live.py bu uçtan uca akışın script halini zaten yapıyor (LLM hariç) — referans olarak incele, mantığı oradan al.
+Connects to any OpenAI-compatible chat completion endpoint.
+Currently targets the internal test-automation-ai-api extension endpoint.
+"""
 
-Kurulacak endpoint:
+import httpx
 
-POST /analyze
-Body: { "bank": "<banka_kodu>", "job_id": <int> }  VEYA  { "bank": "<banka_kodu>", "run_id": <int> }
+from analyzer.llm.base import LLMProvider, LLMResponse
 
-Davranış:
-1. Girdiyi doğrula: bank zorunlu; job_id VEYA run_id'den en az biri olmalı, ikisi de yoksa 400 benzeri net hata. bank tanınmıyorsa registry zaten hata veriyor — bunu anlamlı bir HTTP hatasına çevir (örn. 400/404, açıklayıcı mesaj). Banka token'ı tanımsızsa da anlamlı hata döndür.
-2. get_visiumgo_adapter(bank, settings) ile adapter'ı kur, fetch_analysis_input ile başarısız senaryoları çek.
-3. Her başarısız senaryo için: FindingsExtractor ile bulgu çıkar → build_prompt ile prompt oluştur → LLM Provider ile yorumlat.
-4. LLM çağrıları SINIRLI PARALEL olsun: aynı anda en fazla N senaryo işlensin (asyncio.Semaphore vb.). N config'ten gelsin (örn. ANALYZE_MAX_CONCURRENCY, default 5). Tüm senaryolar bitince devam.
-5. Sonucu bir analyzer_run olarak DB'ye kaydet (mevcut repository ile). Yani sonuç hem dönülecek hem kalıcı saklanacak.
-6. JSON döndür. Örnek yapı:
-   {
-     "analyzer_run_id": "...",
-     "bank": "ziraat_bankasi",
-     "job_id": 249,
-     "run_id": 124320,
-     "scenarios": [
-       { "name": "...", "category": "...", "analysis": { "root_cause": "...", "error_type": "...", "explanation": "...", "suggestion": "...", "confidence": "..." } }
-     ]
-   }
 
-Kurallar:
-- LLM tarafında ŞİMDİLİK mevcut mock provider kullanılsın. Gerçek lokal model BU TURDA bağlanmayacak — sonraki adım. llm_provider ayarı mock'a ayarlıyken endpoint uçtan uca çalışmalı.
-- Endpoint SENKRON olsun (sonucu tek yanıtta döndür), ama madde 4'teki sınırlı paralel işlemeyle. Asenkron background task'a ŞİMDİ geçme; ancak DB'ye kaydetme mantığını öyle kur ki ileride asenkrona geçiş kolay olsun (sonuç DB'den okunabilir durumda).
-- Mevcut /analyzer-runs ve /known-issues endpoint'lerini bozma.
-- Hata yönetimi net olsun: VisiumGo erişilemezse, senaryo bulunamazsa, banka/token hatası varsa anlamlı HTTP yanıtları dön.
-- Bittiğinde mevcut testler (pytest) geçmeli. Yeni endpoint için en azından temel testler ekle (geçerli istek, eksik bank, eksik job_id/run_id, tanınmayan banka). Mock LLM ile uçtan uca bir testi de tercihen ekle.
-- Kapsam dışı iyileştirme görürsen düzeltme; sonda "Fark ettiğim, dokunmadığım noktalar" başlığında listele.
-- Her büyük değişiklikten önce neyi neden yaptığını kısaca açıkla.
+class OpenAICompatibleLLMProvider(LLMProvider):
+    """LLM provider for OpenAI-compatible HTTP endpoints."""
+
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        api_key: str = "",
+        endpoint_path: str = "/api/v1/extension/send",
+        timeout_seconds: int = 60,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._model = model
+        self._api_key = api_key
+        self._endpoint_path = endpoint_path
+        self._timeout_seconds = timeout_seconds
+
+    @property
+    def provider_name(self) -> str:
+        return "openai_compatible"
+
+    @property
+    def model_name(self) -> str:
+        return self._model
+
+    async def complete(
+        self, prompt: str, system_prompt: str | None = None
+    ) -> LLMResponse:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        body = {
+            "messages": messages,
+            "temperature": 0,
+            "max_tokens": 2000,
+        }
+
+        url = f"{self._base_url}{self._endpoint_path}"
+
+        async with httpx.AsyncClient(timeout=self._timeout_seconds) as client:
+            response = await client.post(url, json=body)
+            response.raise_for_status()
+            data = response.json()
+
+        content = data["choices"][0]["message"]["content"]
+        usage = data.get("usage") or {}
+
+        return LLMResponse(
+            content=content,
+            model=self._model,
+            provider=self.provider_name,
+            input_tokens=usage.get("prompt_tokens", 0),
+            output_tokens=usage.get("completion_tokens", 0),
+        )
+
+    async def health_check(self) -> bool:
+        try:
+            await self.complete(prompt="ping")
+            return True
+        except Exception:
+            return False
