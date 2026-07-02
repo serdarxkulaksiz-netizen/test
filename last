@@ -1,0 +1,77 @@
+import com.google.api.client.auth.oauth2.Credential;
+import com.google.api.client.auth.oauth2.TokenResponse;
+import com.google.api.client.googleapis.auth.oauth2.GoogleCredential;
+import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport;
+import com.google.api.client.json.gson.GsonFactory;
+import com.google.api.services.gmail.Gmail;
+import com.google.api.services.gmail.model.Message;
+import com.google.api.services.gmail.model.MessagePart;
+import java.util.Base64;
+import java.util.List;
+
+public class GmailReader {
+
+    private static final String CLIENT_ID = "716837879680-amsnjgds9fi5itgj11psl6bmganeoi5c.apps.googleusercontent.com";
+    private static final String CLIENT_SECRET = "GOCSPX-SrsnUtJ1_GvztqAUGJta3kLwaTT";
+    private static final String REFRESH_TOKEN = "1//04s8TdBnFt3xMCgYIARAAGAOSNwF-L9irp2qxdxnmbl_1N2M_F6Doou2CFDPD2kaIGcqOrH7HYZhkd2N1zn2Y7if0bApIeGpGAw0";
+
+    // Gmail servis nesnesini oluşturur
+    private Gmail getService() throws Exception {
+        Credential credential = new GoogleCredential.Builder()
+                .setTransport(GoogleNetHttpTransport.newTrustedTransport())
+                .setJsonFactory(GsonFactory.getDefaultInstance())
+                .setClientSecrets(CLIENT_ID, CLIENT_SECRET)
+                .build()
+                .setFromTokenResponse(new TokenResponse().setRefreshToken(REFRESH_TOKEN));
+
+        return new Gmail.Builder(GoogleNetHttpTransport.newTrustedTransport(), 
+                                 GsonFactory.getDefaultInstance(), credential)
+                .setApplicationName("GmailAutomation")
+                .build();
+    }
+
+    // Son gelen mailin konusunu döner
+    public String getLatestEmailSubject() throws Exception {
+        Message message = getLatestMessage();
+        if (message == null) return null;
+
+        return message.getPayload().getHeaders().stream()
+                .filter(h -> h.getName().equalsIgnoreCase("Subject"))
+                .findFirst()
+                .map(h -> h.getValue())
+                .orElse("Konusuz");
+    }
+
+    // Son gelen mailin gövdesini (body) temiz metin olarak döner
+    public String getLatestEmailBody() throws Exception {
+        Message message = getLatestMessage();
+        if (message == null) return null;
+        return extractBody(message.getPayload());
+    }
+
+    // Yardımcı: En son mesajı çeker
+    private Message getLatestMessage() throws Exception {
+        Gmail service = getService();
+        var response = service.users().messages().list("me")
+                .setQ("label:INBOX")
+                .setMaxResults(1L)
+                .execute();
+
+        if (response.getMessages() == null || response.getMessages().isEmpty()) return null;
+        return service.users().messages().get("me", response.getMessages().get(0).getId()).execute();
+    }
+
+    // Yardımcı: Base64 içeriği çözer
+    private String extractBody(MessagePart part) {
+        if (part.getMimeType().equals("text/plain")) {
+            return new String(Base64.getUrlDecoder().decode(part.getBody().getData()));
+        }
+        if (part.getParts() != null) {
+            for (MessagePart p : part.getParts()) {
+                String body = extractBody(p);
+                if (body != null) return body;
+            }
+        }
+        return null;
+    }
+}
